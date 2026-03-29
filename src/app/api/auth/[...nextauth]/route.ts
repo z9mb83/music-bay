@@ -1,11 +1,8 @@
 import NextAuth from 'next-auth'
-import { PrismaAdapter } from '@next-auth/prisma-adapter'
 import SpotifyProvider from 'next-auth/providers/spotify'
 import GoogleProvider from 'next-auth/providers/google'
-import { prisma } from '@/lib/prisma'
 
 export const authOptions = {
-  adapter: PrismaAdapter(prisma),
   providers: [
     SpotifyProvider({
       clientId: process.env.SPOTIFY_CLIENT_ID!,
@@ -27,6 +24,9 @@ export const authOptions = {
     })
   ],
   callbacks: {
+    async signIn({ account, profile }: { account: any; profile: any }) {
+      return true
+    },
     async jwt({ token, account, user }: { token: any; account: any; user: any }) {
       if (account && user) {
         token.accessToken = account.access_token
@@ -40,7 +40,9 @@ export const authOptions = {
       session.accessToken = token.accessToken as string
       session.refreshToken = token.refreshToken as string
       session.provider = token.provider as string
-      session.user.id = token.userId as string
+      if (session.user) {
+        session.user.id = token.userId as string
+      }
       return session
     }
   },
