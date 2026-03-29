@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useSession, signIn, signOut } from 'next-auth/react'
-import { Mic2, Music, Search, LogIn, LogOut, Play, Pause, User, Disc } from 'lucide-react'
+import { Mic2, Music, Search, LogIn, LogOut, Play, Pause, User, Disc, Volume2, VolumeX, Mic, Radio } from 'lucide-react'
 import Link from 'next/link'
 
 interface LyricLine {
@@ -15,6 +15,9 @@ interface SongInfo {
   artist: string
   thumbnail?: string
   source: string
+  videoId?: string
+  audioUrl?: string
+  duration?: number
 }
 
 export default function KaraokePage() {
@@ -26,32 +29,48 @@ export default function KaraokePage() {
   const [currentLine, setCurrentLine] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [error, setError] = useState('')
-  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const [isVocalsOnly, setIsVocalsOnly] = useState(false)
+  const [volume, setVolume] = useState(80)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+  const progressInterval = useRef<NodeJS.Timeout | null>(null)
 
+  // Auto-advance lyrics based on playback time
   useEffect(() => {
-    if (isPlaying && lyrics.length > 0) {
-      intervalRef.current = setInterval(() => {
-        setCurrentLine(prev => {
-          if (prev >= lyrics.length - 1) {
-            setIsPlaying(false)
-            return prev
+    if (isPlaying && lyrics.length > 0 && duration > 0) {
+      progressInterval.current = setInterval(() => {
+        setCurrentTime(prev => {
+          const newTime = prev + 0.1
+          // Calculate which lyric line should be active based on time
+          const lineDuration = duration / lyrics.length
+          const newLine = Math.floor(newTime / lineDuration)
+          if (newLine !== currentLine && newLine < lyrics.length) {
+            setCurrentLine(newLine)
           }
-          return prev + 1
+          if (newTime >= duration) {
+            setIsPlaying(false)
+            return 0
+          }
+          return newTime
         })
-      }, 3000)
+      }, 100)
     } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
+      if (progressInterval.current) {
+        clearInterval(progressInterval.current)
       }
     }
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
+      if (progressInterval.current) clearInterval(progressInterval.current)
     }
-  }, [isPlaying, lyrics.length])
+  }, [isPlaying, lyrics.length, duration, currentLine])
 
   const parseSongLink = async (url: string) => {
     setIsLoading(true)
     setError('')
+    setCurrentTime(0)
+    setCurrentLine(0)
+    setIsPlaying(false)
     
     try {
       const response = await fetch('/api/karaoke', {
@@ -69,17 +88,17 @@ export default function KaraokePage() {
       }
       
       setSongInfo(data.songInfo)
+      setDuration(data.songInfo.duration || 180)
       
       if (data.lyrics && data.lyrics.length > 0) {
         setLyrics(data.lyrics)
       } else {
         setLyrics([
           { time: 0, text: '🎵 Welcome to Karaoke Bay! 🎵' },
-          { time: 3, text: 'Paste any song link above' },
-          { time: 6, text: 'And sing along with lyrics' },
-          { time: 9, text: 'Connect Spotify or YouTube' },
-          { time: 12, text: 'For the full experience!' },
-          { time: 15, text: '🎤 Sing your heart out! 🎤' },
+          { time: 4, text: 'Paste any song link above' },
+          { time: 8, text: 'And sing along with lyrics' },
+          { time: 12, text: 'Toggle Vocals/Instrumental below' },
+          { time: 16, text: '🎤 Sing your heart out! 🎤' },
         ])
       }
     } catch (err) {
@@ -95,6 +114,37 @@ export default function KaraokePage() {
       parseSongLink(songUrl)
     }
   }
+
+  const togglePlay = () => {
+    setIsPlaying(!isPlaying)
+    // Post message to YouTube iframe
+    if (iframeRef.current && iframeRef.current.contentWindow) {
+      const action = isPlaying ? 'pauseVideo' : 'playVideo'
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: 'command', func: action, args: [] }),
+        '*'
+      )
+    }
+  }
+
+  const seekTo = (time: number) => {
+    setCurrentTime(time)
+    const lineDuration = duration / lyrics.length
+    setCurrentLine(Math.floor(time / lineDuration))
+    if (iframeRef.current && iframeRef.current.contentWindow) {
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: 'command', func: 'seekTo', args: [time, true] }),
+        '*'
+      )
+    }
+  }
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
@@ -244,10 +294,18 @@ export default function KaraokePage() {
           {songInfo && (
             <div className="animate-fade-in">
               {/* Song Header */}
-              <div className="flex items-center gap-4 mb-6 p-4 bg-white/5 rounded-2xl backdrop-blur-sm border border-white/10">
-                <div className="w-16 h-16 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center flex-shrink-0">
-                  <Music className="w-8 h-8 text-white" />
-                </div>
+              <div className="flex items-center gap-4 mb-4 p-4 bg-white/5 rounded-2xl backdrop-blur-sm border border-white/10">
+                {songInfo.thumbnail ? (
+                  <img 
+                    src={songInfo.thumbnail} 
+                    alt={songInfo.title}
+                    className="w-16 h-16 rounded-xl object-cover"
+                  />
+                ) : (
+                  <div className="w-16 h-16 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                    <Music className="w-8 h-8 text-white" />
+                  </div>
+                )}
                 <div className="flex-1 min-w-0">
                   <h2 className="text-lg font-bold text-white truncate">{songInfo.title}</h2>
                   <p className="text-white/60 truncate">{songInfo.artist}</p>
@@ -261,6 +319,7 @@ export default function KaraokePage() {
                     setLyrics([])
                     setCurrentLine(0)
                     setIsPlaying(false)
+                    setCurrentTime(0)
                   }}
                   className="px-4 py-2 text-white/60 hover:text-white text-sm transition-colors flex-shrink-0"
                 >
@@ -268,14 +327,86 @@ export default function KaraokePage() {
                 </button>
               </div>
 
+              {/* YouTube Player - Hidden but functional */}
+              {songInfo.videoId && (
+                <div className="mb-4 rounded-xl overflow-hidden bg-black">
+                  <iframe
+                    ref={iframeRef}
+                    width="100%"
+                    height="200"
+                    src={`https://www.youtube.com/embed/${songInfo.videoId}?enablejsapi=1&origin=${typeof window !== 'undefined' ? window.location.origin : ''}`}
+                    title="YouTube video player"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    className="rounded-xl"
+                  />
+                </div>
+              )}
+
+              {/* Audio Controls */}
+              <div className="flex items-center justify-between gap-4 mb-6 p-4 bg-white/5 rounded-xl border border-white/10">
+                {/* Time Display */}
+                <div className="flex items-center gap-3">
+                  <span className="text-white/60 text-sm font-medium">
+                    {formatTime(currentTime)}
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={duration}
+                    value={currentTime}
+                    onChange={(e) => seekTo(parseInt(e.target.value))}
+                    className="w-32 md:w-48 h-2 bg-white/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-purple-500 [&::-webkit-slider-thumb]:rounded-full"
+                  />
+                  <span className="text-white/60 text-sm font-medium">
+                    {formatTime(duration)}
+                  </span>
+                </div>
+
+                {/* Vocals/Instrumental Toggle */}
+                <div className="flex items-center gap-2">
+                  <span className="text-white/60 text-sm hidden sm:block">
+                    {isVocalsOnly ? 'Vocals Only' : 'With Music'}
+                  </span>
+                  <button
+                    onClick={() => setIsVocalsOnly(!isVocalsOnly)}
+                    className={`p-2 rounded-lg transition-colors ${
+                      isVocalsOnly 
+                        ? 'bg-purple-600 text-white' 
+                        : 'bg-white/10 text-white/60 hover:bg-white/20'
+                    }`}
+                    title="Toggle Vocals/Instrumental"
+                  >
+                    {isVocalsOnly ? <Mic className="w-5 h-5" /> : <Radio className="w-5 h-5" />}
+                  </button>
+                </div>
+
+                {/* Volume Control */}
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => setVolume(volume === 0 ? 80 : 0)}
+                    className="text-white/60 hover:text-white"
+                  >
+                    {volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={volume}
+                    onChange={(e) => setVolume(parseInt(e.target.value))}
+                    className="w-20 h-1 bg-white/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2 [&::-webkit-slider-thumb]:h-2 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full hidden sm:block"
+                  />
+                </div>
+              </div>
+
               {/* Lyrics Display - Karaoke Style */}
-              <div className="relative bg-gradient-to-b from-black/80 to-black/60 rounded-3xl p-6 md:p-10 min-h-[55vh] flex flex-col items-center justify-center overflow-hidden border border-white/10 shadow-2xl">
+              <div className="relative bg-gradient-to-b from-black/80 to-black/60 rounded-3xl p-6 md:p-10 min-h-[45vh] flex flex-col items-center justify-center overflow-hidden border border-white/10 shadow-2xl">
                 {/* Ambient glow effects */}
                 <div className="absolute top-0 left-1/4 w-64 h-64 bg-purple-500/10 rounded-full blur-3xl" />
                 <div className="absolute bottom-0 right-1/4 w-64 h-64 bg-pink-500/10 rounded-full blur-3xl" />
                 
                 {/* Lyrics */}
-                <div className="relative z-10 text-center space-y-6 md:space-y-8 max-w-3xl w-full overflow-y-auto max-h-[45vh] scrollbar-hide">
+                <div className="relative z-10 text-center space-y-6 md:space-y-8 max-w-3xl w-full overflow-y-auto max-h-[35vh] scrollbar-hide">
                   {lyrics.map((line, index) => {
                     const isActive = index === currentLine
                     const isPast = index < currentLine
@@ -284,8 +415,8 @@ export default function KaraokePage() {
                       <p
                         key={index}
                         onClick={() => {
-                          setCurrentLine(index)
-                          setIsPlaying(false)
+                          const lineDuration = duration / lyrics.length
+                          seekTo(index * lineDuration)
                         }}
                         className={`text-xl md:text-3xl lg:text-4xl font-bold transition-all duration-500 cursor-pointer px-4 py-2 rounded-lg ${
                           isActive
@@ -305,8 +436,8 @@ export default function KaraokePage() {
                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 bg-black/40 backdrop-blur-sm px-6 py-3 rounded-full border border-white/10">
                   <button
                     onClick={() => {
-                      setCurrentLine(Math.max(0, currentLine - 1))
-                      setIsPlaying(false)
+                      const lineDuration = duration / lyrics.length
+                      seekTo(Math.max(0, (currentLine - 1) * lineDuration))
                     }}
                     className="p-2 hover:bg-white/10 rounded-full text-white/70 hover:text-white transition-colors"
                   >
@@ -314,7 +445,7 @@ export default function KaraokePage() {
                   </button>
                   
                   <button
-                    onClick={() => setIsPlaying(!isPlaying)}
+                    onClick={togglePlay}
                     className="p-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 rounded-full text-white transition-all shadow-lg"
                   >
                     {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6" />}
@@ -322,8 +453,8 @@ export default function KaraokePage() {
                   
                   <button
                     onClick={() => {
-                      setCurrentLine(Math.min(lyrics.length - 1, currentLine + 1))
-                      setIsPlaying(false)
+                      const lineDuration = duration / lyrics.length
+                      seekTo(Math.min(duration, (currentLine + 1) * lineDuration))
                     }}
                     className="p-2 hover:bg-white/10 rounded-full text-white/70 hover:text-white transition-colors"
                   >
@@ -332,30 +463,22 @@ export default function KaraokePage() {
                 </div>
               </div>
 
-              {/* Progress Bar */}
-              <div className="mt-6 flex items-center gap-4 bg-white/5 p-4 rounded-xl border border-white/10">
-                <span className="text-white/60 text-sm font-medium w-16 text-center">
-                  {currentLine + 1}
+              {/* Line Progress */}
+              <div className="mt-4 flex items-center gap-4 bg-white/5 p-4 rounded-xl border border-white/10">
+                <span className="text-white/60 text-sm font-medium">
+                  Line {currentLine + 1} of {lyrics.length}
                 </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={lyrics.length - 1}
-                  value={currentLine}
-                  onChange={(e) => {
-                    setCurrentLine(parseInt(e.target.value))
-                    setIsPlaying(false)
-                  }}
-                  className="flex-1 h-2 bg-white/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-gradient-to-r [&::-webkit-slider-thumb]:from-purple-500 [&::-webkit-slider-thumb]:to-pink-500 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:cursor-pointer"
-                />
-                <span className="text-white/60 text-sm font-medium w-16 text-center">
-                  {lyrics.length}
-                </span>
+                <div className="flex-1 h-2 bg-white/20 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-300"
+                    style={{ width: `${((currentLine + 1) / lyrics.length) * 100}%` }}
+                  />
+                </div>
               </div>
 
               {/* Tips */}
               <p className="text-center text-white/40 text-sm mt-4 flex items-center justify-center gap-2">
-                <span>💡</span> Click any lyric to jump • Use controls to navigate • Auto-advances when playing
+                <span>💡</span> Click any lyric to jump • Use controls to navigate • Toggle vocals/instrumental above
               </p>
             </div>
           )}
